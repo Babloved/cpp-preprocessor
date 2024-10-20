@@ -6,16 +6,15 @@
 #include <sstream>
 #include <string>
 #include <vector>
-#include <array>
 #include <set>
 
 using namespace std;
 using filesystem::path;
-const int BUFF_SIZE = 1024;
 
 path operator ""_p(const char *data, std::size_t sz) {
     return path(data, data + sz);
 }
+
 void GetListLibPath(map<string, path> &list_path, const path &p, int offset = 0) {
     set<path, greater<>> files;
     string p_str = p.string();
@@ -33,6 +32,14 @@ void GetListLibPath(map<string, path> &list_path, const path &p, int offset = 0)
     }
 }
 
+bool CheckCorrectionFile(const path &lib_path, const path &lib, const path &in_file, const unsigned int line) {
+    if (!exists(lib_path)) {
+        cout << "unknown include file " << lib.generic_string() << " at file " << in_file.generic_string()
+             << " at line " << line << endl;
+        return false;
+    }
+    return true;
+}
 
 bool Replace(const path &in_file, ofstream &dst, const map<string, path> &list_path) {
     ifstream src(in_file);
@@ -43,7 +50,6 @@ bool Replace(const path &in_file, ofstream &dst, const map<string, path> &list_p
     static regex include_local_reg(R"/(\s*#\s*include\s*"([^"]*)"\s*)/");
     static regex include_base_reg(R"/(\s*#\s*include\s*<([^>]*)>\s*)/");
     string line_buff;
-    line_buff.reserve(BUFF_SIZE);
     smatch smatch_base;
     smatch smatch_local;
     unsigned int line = 1;
@@ -59,18 +65,9 @@ bool Replace(const path &in_file, ofstream &dst, const map<string, path> &list_p
             } else {
                 //Contains base include
                 path lib = static_cast<string>(smatch_base[1]);
-//                cout << "Find base lib file: " << lib << endl;
-
                 auto iterator_path = list_path.find(lib.filename().string());
                 path lib_path = (iterator_path != list_path.end()) ? (*iterator_path).second : "";
-
-                ifstream lib_file(lib_path);
-                if (!exists(lib_path)) {
-                    cout << "unknown include file " << lib.generic_string() << " at file " << in_file.generic_string()
-                         << " at line " << line << endl;
-                    return false;
-                }
-                if (!Replace(lib_path,dst,list_path)){
+                if (!CheckCorrectionFile(lib_path, lib, in_file, line) || !Replace(lib_path, dst, list_path)) {
                     return false;
                 }
             }
@@ -78,18 +75,11 @@ bool Replace(const path &in_file, ofstream &dst, const map<string, path> &list_p
             //Contains local include
             path lib = static_cast<string>(smatch_local[1]);
             path lib_path = source_path / lib;
-//            cout << "Find local lib file: " << lib << endl;
             if (!exists(lib_path)) {
                 auto iterator_path = list_path.find(lib.filename().string());
                 lib_path = (iterator_path != list_path.end()) ? (*iterator_path).second : "";
-                if (!exists(lib_path)){
-                    cout << "unknown include file " << lib.generic_string() << " at file " << in_file.generic_string() << " at line "
-                            << line << endl;
-                    return false;
-                }
             }
-            lib_path.make_preferred();
-            if (!Replace(lib_path,dst,list_path)){
+            if (!CheckCorrectionFile(lib_path, lib, in_file, line) || !Replace(lib_path, dst, list_path)) {
                 return false;
             }
         }
@@ -99,7 +89,6 @@ bool Replace(const path &in_file, ofstream &dst, const map<string, path> &list_p
 }
 
 bool Preprocess(const path &in_file, const path &out_file, const vector<path> &include_directories) {
-
     ofstream dst(out_file);
     if (!dst.is_open()) {
         return false;
@@ -108,7 +97,7 @@ bool Preprocess(const path &in_file, const path &out_file, const vector<path> &i
     // We get a recursive list of all libraries
     map<string, path> list_path;
     for (const auto &el: include_directories) {
-        if (!exists(el)){
+        if (!exists(el)) {
             continue;
         }
         GetListLibPath(list_path, el);
@@ -129,7 +118,6 @@ void Test() {
     filesystem::create_directories("sources"_p / "include2"_p / "lib"_p, err);
     filesystem::create_directories("sources"_p / "include1"_p, err);
     filesystem::create_directories("sources"_p / "dir1"_p / "subdir"_p, err);
-
     {
         ofstream file("sources/a.cpp");
         file << "// this comment before include\n"
@@ -168,10 +156,8 @@ void Test() {
         ofstream file("sources/include2/lib/std2.h");
         file << "// std2\n"s;
     }
-
     assert((!Preprocess("sources"_p / "a.cpp"_p, "sources"_p / "a.in"_p,
-                        {"sources"_p / "include1"_p,"sources"_p / "include2"_p})));
-
+                        {"sources"_p / "include1"_p, "sources"_p / "include2"_p})));
     ostringstream test_out;
     test_out << "// this comment before include\n"
                 "// text from b.h before include\n"
@@ -186,10 +172,8 @@ void Test() {
                 "\n"
                 "int SayHello() {\n"
                 "    cout << \"hello, world!\" << endl;\n"s;
-
     assert(GetFileContents("sources/a.in"s) == test_out.str());
 }
-
 
 int main() {
     Test();
